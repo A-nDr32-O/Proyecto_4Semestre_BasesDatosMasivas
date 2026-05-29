@@ -1,4 +1,3 @@
-import sqlite3
 import customtkinter as ctk
 from tkinter import messagebox, ttk
 from tkinter import Toplevel
@@ -6,9 +5,6 @@ from datetime import datetime
 import sys
 from typing import List, Dict, Any, Optional, Callable, Tuple 
 import os
-
-# --- Importar la ruta desde config.py ---
-from config import DB_PATH 
 
 # --- Importar Tema y Módulo de Base de Datos ---
 from theme import *
@@ -31,82 +27,55 @@ try:
 except (IndexError, ValueError):
     ID_USUARIO_ACTUAL: int = 1 
 
+def _normalizar_producto_db(producto: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convierte valores numéricos devueltos por MySQL/Decimal a tipos nativos de Python
+    para evitar errores en operaciones aritméticas de la interfaz.
+    """
+    producto_normalizado = dict(producto)
+    for clave in ("precioPorGramo", "stockEnGramos"):
+        if clave in producto_normalizado and producto_normalizado[clave] is not None:
+            producto_normalizado[clave] = float(producto_normalizado[clave])
+    return producto_normalizado
+
+
 def obtener_productos_disponibles() -> List[Dict[str, Any]]:
     """
     Obtiene todos los productos con stock > 0.
     """
     sql = "SELECT idProducto, nombre, precioPorGramo, stockEnGramos FROM Producto WHERE stockEnGramos > 0 ORDER BY nombre ASC"
-    return database.obtener_diccionarios(sql)
+    productos = database.obtener_diccionarios(sql)
+    return [_normalizar_producto_db(producto) for producto in productos]
 
 
 def finalizar_venta(id_usuario: int, metodo_pago_final: str, carro_compras_agrupado: List[Dict[str, Any]], monto_total: float, pagos_registrados: List[Dict[str, Any]]) -> bool:
     """
-    Registra la venta, actualiza el inventario, registra los abonos y maneja la deuda.
-    --- FUNCIÓN REFACTORIZADA para usar database.ejecutar_transaccion_multiples ---
+    Registra la venta, actualiza el inventario, registra los abonos y maneja la deuda
+    usando la capa de acceso a datos MySQL.
     """
-    
-    # NOTA CRÍTICA: La inserción en Venta y la obtención del lastrowid
-    # requiere una transacción manual local, similar a gestion_compras.py.
-    # NO podemos usar ejecutar_transaccion_multiples para la primera parte
-    # porque no devuelve el ID generado. 
-    
-    conexion = None
-    try:
-        conexion = sqlite3.connect(DB_PATH)
-        cursor = conexion.cursor()
-        cursor.execute("BEGIN TRANSACTION;")
+    return database.finalizar_venta_db(
+        id_usuario=id_usuario,
+        metodo_pago_final=metodo_pago_final,
+        carro_compras_agrupado=carro_compras_agrupado,
+        monto_total=monto_total,
+        pagos_registrados=pagos_registrados,
+    )
 
-        fecha_actual = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # 1. Registrar la Venta (Obtener idVenta)
-        sql_venta = "INSERT INTO Venta (idUsuario, fechaHora, montoTotal, metodoPago) VALUES (?, ?, ?, ?)"
-        cursor.execute(sql_venta, (id_usuario, fecha_actual, monto_total, metodo_pago_final))
-        id_venta_generado = cursor.lastrowid
 
-        # 2. Operaciones Secundarias (Detalle, Stock, Abonos, Deuda)
-        operaciones_secundarias = []
+def obtener_stock_en_varias_unidades(producto: Dict[str, Any]) -> str:
+    """
+    Devuelve el stock del producto formateado en gramos, kilos y libras.
+    """
+    stock_gramos = float(producto['stockEnGramos'])
+    stock_kilos = stock_gramos / 1000.0
+    stock_libras = stock_gramos / 453.592
 
-        # 2a. Registrar el Detalle de Venta y Actualizar Stock
-        sql_detalle = "INSERT INTO DetalleVenta (idVenta, idProducto, pesoVendido, subtotal) VALUES (?, ?, ?, ?)"
-        sql_update_stock = "UPDATE Producto SET stockEnGramos = stockEnGramos - ? WHERE idProducto = ?"
-        
-        for item in carro_compras_agrupado: 
-            operaciones_secundarias.append((sql_detalle, (id_venta_generado, item['id'], item['peso'], item['subtotal']))) 
-            operaciones_secundarias.append((sql_update_stock, (item['peso'], item['id'])))
-            
-        # 2b. Registrar TODAS las transacciones de pago (Abonos)
-        sql_transaccion = "INSERT INTO TransaccionPago (idVenta, montoAbonado, metodo, fechaHora) VALUES (?, ?, ?, ?)"
-        for pago in pagos_registrados:
-            operaciones_secundarias.append((sql_transaccion, (id_venta_generado, pago['monto'], pago['metodo'], fecha_actual)))
-
-        # 2c. Manejar la Deuda Pendiente (si el método final es 'Pendiente')
-        if metodo_pago_final == "Pendiente":
-            monto_abonado = sum(p['monto'] for p in pagos_registrados)
-            monto_pendiente_restante = monto_total - monto_abonado
-            
-            if monto_pendiente_restante > 0.01:
-                 sql_pendiente = """
-                    INSERT INTO VentaPendiente (idVenta, fechaRegistro, montoPendiente, estadoDeuda) 
-                    VALUES (?, ?, ?, 'Pendiente')
-                """
-                 operaciones_secundarias.append((sql_pendiente, (id_venta_generado, fecha_actual, monto_pendiente_restante)))
-        
-        
-        # 3. Ejecutar el resto de las operaciones usando la misma conexión
-        for sql, params in operaciones_secundarias:
-             cursor.execute(sql, params)
-             
-        conexion.commit()
-        return True
-        
-    except sqlite3.Error as e:
-        messagebox.showerror("Error de Transacción", f"No se pudo completar la venta. Se revirtieron los cambios.\nDetalle: {e}")
-        if conexion:
-            conexion.rollback()
-        return False
-    finally:
-        if conexion:
-            conexion.close()
+    return (
+        f"Stock Disponible:\n"
+        f"{stock_gramos:,.0f} gramos\n"
+        f"{stock_kilos:,.2f} kilos\n"
+        f"{stock_libras:,.2f} libras"
+    )
 
 # -------------------------------------------------------------------
 # LÓGICA DE UNIDADES Y DISPLAY 
@@ -272,6 +241,7 @@ class VentanaVentas(ctk.CTkFrame):
                                             dropdown_fg_color=COLOR_ENTRY_BG)
         self.combo_productos.grid(row=2, column=0, padx=20, pady=(0, 10), sticky="ew")
         self.combo_productos.bind("<KeyRelease>", self.on_producto_keyrelease)
+        self.combo_productos.bind("<<ComboboxSelected>>", self._on_combo_seleccionado)
         
         # Campo Cantidad
         ctk.CTkLabel(frame_entrada, text="Cantidad:", font=("Arial", 12, "bold"), text_color=COLOR_TEXT_PRIMARY).grid(row=1, column=1, padx=20, pady=(10, 0), sticky="w")
@@ -429,16 +399,18 @@ class VentanaVentas(ctk.CTkFrame):
 
         if not valor_escrito:
             self.combo_productos.configure(values=self.nombre_productos_disponibles)
-            self.actualizar_info_producto(None)
         else:
             nombres_filtrados = [
                 nombre for nombre in self.nombre_productos_disponibles
                 if valor_escrito in nombre.lower()
             ]
             self.combo_productos.configure(values=nombres_filtrados)
-            
-            if self.combo_productos.get() in nombres_filtrados:
-                 self.actualizar_info_producto(None)
+
+        # Siempre refresca la info, aunque no haya coincidencia exacta
+        self.actualizar_info_producto(self.combo_productos.get())
+
+    def _on_combo_seleccionado(self, event: Any = None) -> None:
+        self.actualizar_info_producto(self.combo_productos.get())
 
     def on_producto_select(self, seleccion: str):
         self.actualizar_info_producto(seleccion)
@@ -456,22 +428,7 @@ class VentanaVentas(ctk.CTkFrame):
             
             # --- Stock Multi-Unidad ---
             precio_formateado = f"${p['precioPorGramo']:,.2f}"
-            stock_g = p['stockEnGramos']
-            stock_info = f"Stock Disponible:\n{stock_g:,.0f} gramos (Base)"
-            
-            factores_disp = {
-                "Kilos (kg)": 1000.0,
-                "Libras (lb)": 453.592,
-                "Toneladas (t)": 1000000.0
-            }
-            
-            for unidad, factor in factores_disp.items():
-                cantidad_convertida = stock_g / factor
-                if cantidad_convertida >= 1: 
-                    stock_info += f"\n{cantidad_convertida:,.2f} {unidad.split('(')[0].strip()}"
-                elif factor == 1000.0 and cantidad_convertida >= 0.01:
-                    stock_info += f"\n{cantidad_convertida:,.4f} {unidad.split('(')[0].strip()}"
-
+            stock_info = obtener_stock_en_varias_unidades(p)
 
             info = (
                 f"ID: {p['idProducto']}\n"
@@ -519,8 +476,8 @@ class VentanaVentas(ctk.CTkFrame):
         peso_en_gramos = cantidad_ingresada * factor_conversion
         
         producto_id = self.producto_seleccionado['idProducto']
-        stock_actual = self.producto_seleccionado['stockEnGramos']
-        precio_gramo = self.producto_seleccionado['precioPorGramo']
+        stock_actual = float(self.producto_seleccionado['stockEnGramos'])
+        precio_gramo = float(self.producto_seleccionado['precioPorGramo'])
         nombre_producto = self.producto_seleccionado['nombre']
         
         if peso_en_gramos > stock_actual:

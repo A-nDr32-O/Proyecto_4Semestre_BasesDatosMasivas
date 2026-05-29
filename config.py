@@ -17,7 +17,15 @@ def obtener_ruta_base():
 # Edita estos valores con los datos de tu servidor
 # -------------------------------------------------------------------
 DB_HOST     = "localhost"       # Host del servidor MySQL (normalmente localhost)
-DB_PORT     = 3307              # Puerto MySQL (por defecto 3306)
+DB_PORT     = 3306              # Puerto MySQL (por defecto 3306)
 DB_USER     = "root"            # Usuario de MySQL
 DB_PASSWORD = ""                # Contraseña de MySQL
 DB_NAME     = "frutos_secos_db"    # Nombre de la base de datos en phpMyAdmin
+
+DB_CONFIG = {
+    "host": DB_HOST,
+    "port": DB_PORT,
+    "user": DB_USER,
+    "password": DB_PASSWORD,
+    "database": DB_NAME,
+}

@@ -81,6 +81,7 @@ class VentanaGestionUsuarios(ctk.CTk):
 
         # --- Carga Inicial ---
         self.refrescar_tabla_usuarios()
+        self.modo_edicion = False  # True si se está editando un usuario existente
         self.limpiar_campos_contrasena()
 
     # --- MÉTODO ELIMINADO ---
@@ -217,24 +218,21 @@ class VentanaGestionUsuarios(ctk.CTk):
 
     def on_guardar_click(self) -> None:
         """Callback para 'Guardar Nuevo'."""
-        # --- APLICAR .strip() para validación de presencia de datos ---
         nombre = self.entry_nombre_var.get().strip()
         usuario_login = self.entry_usuario_var.get().strip()
         contrasena = self.entry_contrasena_var.get()
         rol = self.combo_rol_var.get()
 
-        if not nombre or not usuario_login or not contrasena or not rol:
+        if not nombre or not usuario_login or not rol:
             messagebox.showwarning("Campos incompletos", "Los campos Nombre, Usuario, Contraseña y Rol son requeridos.")
             return
-        if contrasena == "(Dejar vacío para no cambiar)":
-            messagebox.showwarning("Contraseña Inválida", "Para un nuevo usuario, debe ingresar una contraseña.")
+        if not contrasena or contrasena == "(Obligatorio asignar contraseña)":
+            messagebox.showwarning("Contraseña obligatoria", "Debe ingresar una contraseña para el nuevo usuario.")
             return
 
         contrasena_hasheada = hash_contrasena(contrasena)
 
         sql = "INSERT INTO Usuario (nombre, rol, usuario, contrasena) VALUES (?, ?, ?, ?)"
-        
-        # --- REFACTORIZADO ---
         if database.ejecutar_consulta(sql, (nombre, rol, usuario_login, contrasena_hasheada)):
             messagebox.showinfo("Éxito", f"Usuario '{nombre}' creado correctamente.")
             self.limpiar_campos()
@@ -307,23 +305,21 @@ class VentanaGestionUsuarios(ctk.CTk):
                 self.refrescar_tabla_usuarios()
 
     def limpiar_campos(self) -> None:
-        """Limpia los campos del formulario y pone el placeholder de contraseña."""
+        """Limpia los campos del formulario y pone el placeholder de contraseña para NUEVO usuario."""
         self.entry_nombre_var.set("")
         self.entry_usuario_var.set("")
         self.combo_rol_var.set("")
-        
+        self.modo_edicion = False
         if self.tabla_usuarios.focus():
             self.tabla_usuarios.selection_remove(self.tabla_usuarios.focus())
-
         if self.entry_buscar_var.get():
             self.entry_buscar_var.set("")
             self.poblar_tabla_usuarios(lista_maestra_usuarios)
-
         self.limpiar_campos_contrasena()
         self.entry_nombre.focus()
         
     def on_usuario_select(self, event: Any) -> None:
-        """Callback para selección en la tabla. Rellena el formulario."""
+        """Callback para selección en la tabla. Rellena el formulario para EDICIÓN."""
         try:
             seleccion = self.tabla_usuarios.focus()
             if not seleccion:
@@ -335,12 +331,12 @@ class VentanaGestionUsuarios(ctk.CTk):
         self.entry_nombre_var.set(datos[1])
         self.combo_rol_var.set(datos[2])
         self.entry_usuario_var.set(datos[3])
-
+        self.modo_edicion = True
         self.limpiar_campos_contrasena()
 
     def on_pass_focus_in(self, event: Any) -> None:
         """Callback para cuando el entry de contraseña recibe foco."""
-        if self.entry_contrasena_var.get() == "(Dejar vacío para no cambiar)":
+        if self.entry_contrasena_var.get() in ("(Dejar vacío para no cambiar)", "(Obligatorio asignar contraseña)"):
             self.entry_contrasena_var.set("")
             self.entry_contrasena.configure(fg_color=COLOR_ENTRY_BG, text_color=COLOR_TEXT_PRIMARY, show="*")
 
@@ -350,8 +346,11 @@ class VentanaGestionUsuarios(ctk.CTk):
             self.limpiar_campos_contrasena()
 
     def limpiar_campos_contrasena(self) -> None:
-        """Función helper para resetear el campo contraseña a su estado placeholder."""
-        self.entry_contrasena_var.set("(Dejar vacío para no cambiar)")
+        """Función helper para resetear el campo contraseña a su estado placeholder según modo."""
+        if self.modo_edicion:
+            self.entry_contrasena_var.set("(Dejar vacío para no cambiar)")
+        else:
+            self.entry_contrasena_var.set("(Obligatorio asignar contraseña)")
         self.entry_contrasena.configure(fg_color=COLOR_ENTRY_BG, text_color="grey", show="")
 
     def on_buscar_usuario(self, event: Any):
